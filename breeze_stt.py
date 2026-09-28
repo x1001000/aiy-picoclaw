@@ -127,14 +127,17 @@ class BreezeSTT:
         return paths[0], filename, len(content), ctype
 
     def transcribe(self, wav_path):
-        result, returns = self.transcribe_raw(wav_path)
-        text = self._pick_output(result, returns)
-        if text is None:
-            raise STTError("no transcript in result: %r" % (result,))
-        return text.strip()
+        events, returns = self.transcribe_raw(wav_path)
+        # Streaming Spaces send the transcript in "generating" updates and may end
+        # with only a status (e.g. [None, "轉錄完成"]), so look back from the end.
+        for _, outputs in reversed(events):
+            text = self._pick_output(outputs, returns)
+            if text:
+                return text.strip()
+        raise STTError("no transcript in result: %r" % (events[-1][1] if events else None,))
 
     def transcribe_raw(self, wav_path):
-        """Return (outputs list, output descriptions from /info)."""
+        """Return ([(event, outputs), ...], output descriptions from /info)."""
         name, ep = self._pick_endpoint()
         server_path, filename, size, ctype = self._upload(wav_path)
         file_data = {
@@ -159,15 +162,15 @@ class BreezeSTT:
         if not event_id:
             raise STTError("no event_id in response: %r" % (event,))
 
-        result = self._read_sse("%s/call/%s/%s" % (self._prefix, name, event_id))
-        if not isinstance(result, list):
-            result = [result]
-        return result, ep.get("returns", [])
+        events = self._read_sse("%s/call/%s/%s" % (self._prefix, name, event_id))
+        return events, ep.get("returns", [])
 
     def _pick_output(self, result, returns):
         """The Space may return several outputs (e.g. a status line such as
         "轉錄完成" plus the transcript), so pick the one that is the transcript."""
         if self.output_index is not None:
+            if self.output_index >= len(result):
+                return None
             return self._output_text(result[self.output_index])
 
         candidates = []
@@ -201,6 +204,8 @@ class BreezeSTT:
         return None
 
     def _read_sse(self, path):
+        """Collect every "generating" update and the final "complete" result."""
+        events = []
         event = None
         with self._request("GET", path, headers={"Accept": "text/event-stream"}) as resp:
             for raw in resp:
@@ -209,10 +214,16 @@ class BreezeSTT:
                     event = line[6:].strip()
                 elif line.startswith("data:"):
                     data = line[5:].strip()
-                    if event == "complete":
-                        return json.loads(data)
-                    if event == "error":
+                    if event in ("generating", "complete"):
+                        outputs = json.loads(data)
+                        if outputs is not None:
+                            events.append((event, outputs if isinstance(outputs, list) else [outputs]))
+                        if event == "complete":
+                            return events
+                    elif event == "error":
                         raise STTError("space returned error: %s" % data)
+        if events:
+            return events
         raise STTError("stream ended without a result (Space asleep or out of quota?)")
 
 
@@ -248,10 +259,12 @@ def main(argv):
         output_index=int(os.environ["STT_OUTPUT_INDEX"]) if os.environ.get("STT_OUTPUT_INDEX") else None,
     )
     if len(argv) >= 3 and argv[1] == "--raw":
-        result, returns = stt.transcribe_raw(argv[2])
-        for i, value in enumerate(result):
-            label = returns[i].get("label") if i < len(returns) else None
-            print("[%d] %s: %s" % (i, label, json.dumps(value, ensure_ascii=False)))
+        events, returns = stt.transcribe_raw(argv[2])
+        for n, (event, outputs) in enumerate(events):
+            print("--- %s #%d" % (event, n))
+            for i, value in enumerate(outputs):
+                label = returns[i].get("label") if i < len(returns) else None
+                print("[%d] %s: %s" % (i, label, json.dumps(value, ensure_ascii=False)))
         return 0
     if len(argv) < 2 or argv[1] == "--info":
         print(json.dumps(stt.info(), ensure_ascii=False, indent=2))
