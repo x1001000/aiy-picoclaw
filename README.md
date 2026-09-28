@@ -92,5 +92,7 @@ variables override them. The useful ones:
   `STT_OUTPUT_INDEX` to it in `config.env`.
 - **STT errors / slow first request.** Free Spaces go to sleep; the first call can
   take a minute to wake it. `python3 breeze_stt.py --info` shows whether it is up.
+- **`apt` 404 on `raspbian.raspberrypi.org buster`.** Buster is end-of-life; `install.sh`
+  switches apt to `legacy.raspbian.org` for you (backup in `/etc/apt/sources.list.bak.aiy`).
 - **`edge-tts` not found.** It installs to `~/.local/bin`; add that to `PATH`, or the
   script falls back to `python3 -m edge_tts`. Recent `edge-tts` needs Python ≥ 3.8.
