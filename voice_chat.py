@@ -37,6 +37,7 @@ def load_config():
         "TTS_RATE": "+0%",
         "STT_SPACE_URL": DEFAULT_SPACE_URL,
         "STT_API_NAME": "",
+        "STT_OUTPUT_INDEX": "",
         "HF_TOKEN": "",
         "GREETING": "你好，我是小龍蝦。請在嗶聲後說話，說完再按一次按鈕。",
         "GREETING_MODE": "fixed",  # "fixed" or "llm"
@@ -323,7 +324,8 @@ def main():
     if not os.access(cfg["PICOCLAW_BIN"], os.X_OK):
         sys.exit("picoclaw not found at %s — set PICOCLAW_BIN in config.env" % cfg["PICOCLAW_BIN"])
 
-    stt = BreezeSTT(cfg["STT_SPACE_URL"], cfg["STT_API_NAME"] or None, cfg["HF_TOKEN"] or None)
+    stt = BreezeSTT(cfg["STT_SPACE_URL"], cfg["STT_API_NAME"] or None, cfg["HF_TOKEN"] or None,
+                    output_index=int(cfg["STT_OUTPUT_INDEX"]) if cfg["STT_OUTPUT_INDEX"] else None)
     button = make_button(cfg)
 
     beep_path = None

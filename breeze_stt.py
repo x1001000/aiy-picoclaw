@@ -11,13 +11,15 @@ The endpoint name and its parameters are discovered at runtime from
 {space}/gradio_api/info, so this keeps working if the Space renames things.
 Only the Python standard library is used, so it runs on an old 32-bit Pi.
 
-Run `python3 breeze_stt.py --info` to print the Space's API, or
+Run `python3 breeze_stt.py --info` to print the Space's API,
+`python3 breeze_stt.py --raw some.wav` to see every output the Space returns, or
 `python3 breeze_stt.py some.wav` to transcribe a file.
 """
 
 import json
 import mimetypes
 import os
+import re
 import sys
 import uuid
 import urllib.error
@@ -34,8 +36,10 @@ class STTError(RuntimeError):
 
 
 class BreezeSTT:
-    def __init__(self, space_url=DEFAULT_SPACE_URL, api_name=None, hf_token=None, timeout=180):
+    def __init__(self, space_url=DEFAULT_SPACE_URL, api_name=None, hf_token=None, timeout=180,
+                 output_index=None):
         self.space_url = space_url.rstrip("/")
+        self.output_index = output_index
         self.api_name = api_name.lstrip("/") if api_name else None
         self.hf_token = hf_token or None
         self.timeout = timeout
@@ -123,6 +127,14 @@ class BreezeSTT:
         return paths[0], filename, len(content), ctype
 
     def transcribe(self, wav_path):
+        result, returns = self.transcribe_raw(wav_path)
+        text = self._pick_output(result, returns)
+        if text is None:
+            raise STTError("no transcript in result: %r" % (result,))
+        return text.strip()
+
+    def transcribe_raw(self, wav_path):
+        """Return (outputs list, output descriptions from /info)."""
         name, ep = self._pick_endpoint()
         server_path, filename, size, ctype = self._upload(wav_path)
         file_data = {
@@ -148,10 +160,45 @@ class BreezeSTT:
             raise STTError("no event_id in response: %r" % (event,))
 
         result = self._read_sse("%s/call/%s/%s" % (self._prefix, name, event_id))
-        text = _first_string(result)
-        if text is None:
-            raise STTError("no text in result: %r" % (result,))
-        return text.strip()
+        if not isinstance(result, list):
+            result = [result]
+        return result, ep.get("returns", [])
+
+    def _pick_output(self, result, returns):
+        """The Space may return several outputs (e.g. a status line such as
+        "轉錄完成" plus the transcript), so pick the one that is the transcript."""
+        if self.output_index is not None:
+            return self._output_text(result[self.output_index])
+
+        candidates = []
+        for i, value in enumerate(result):
+            text = self._output_text(value)
+            if not text or not text.strip():
+                continue
+            label = (returns[i].get("label") or "") if i < len(returns) else ""
+            if _STATUS_LABEL.search(label) or _STATUS_TEXT.match(text.strip()):
+                continue
+            candidates.append((1 if _TEXT_LABEL.search(label) else 0, len(text), text))
+        if not candidates:
+            return None
+        return max(candidates)[2]
+
+    def _output_text(self, value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for key in ("text", "value", "transcription"):
+                if isinstance(value.get(key), str):
+                    return value[key]
+            # A downloadable transcript file (.txt / .srt / .vtt).
+            url = value.get("url") or ""
+            if url and re.search(r"\.(txt|srt|vtt)$", url, re.I):
+                path = url[len(self.space_url):] if url.startswith(self.space_url) else None
+                if path is None:
+                    return None
+                with self._request("GET", path) as resp:
+                    return _strip_subtitles(resp.read().decode("utf-8", "replace"))
+        return None
 
     def _read_sse(self, path):
         event = None
@@ -177,19 +224,20 @@ def _is_file_param(p):
     return "filepath" in ptype or "filedata" in ptype
 
 
-def _first_string(value):
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (list, tuple)):
-        for v in value:
-            s = _first_string(v)
-            if s is not None:
-                return s
-    if isinstance(value, dict):
-        for key in ("text", "value", "transcription"):
-            if isinstance(value.get(key), str):
-                return value[key]
-    return None
+_STATUS_LABEL = re.compile(r"status|狀態|state|message|訊息|log|info|進度|progress", re.I)
+_TEXT_LABEL = re.compile(r"轉錄|轉寫|文字|結果|text|transcri|result|output", re.I)
+_STATUS_TEXT = re.compile(r"^[^\n]{0,20}(完成|成功|失敗|錯誤|處理中|done|success|complete[d]?|error|failed)[!！。.]?$", re.I)
+
+
+def _strip_subtitles(text):
+    """Turn SRT/VTT into plain text; plain text passes through unchanged."""
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line == "WEBVTT" or line.isdigit() or "-->" in line:
+            continue
+        lines.append(line)
+    return " ".join(lines)
 
 
 def main(argv):
@@ -197,7 +245,14 @@ def main(argv):
         os.environ.get("STT_SPACE_URL", DEFAULT_SPACE_URL),
         os.environ.get("STT_API_NAME") or None,
         os.environ.get("HF_TOKEN") or None,
+        output_index=int(os.environ["STT_OUTPUT_INDEX"]) if os.environ.get("STT_OUTPUT_INDEX") else None,
     )
+    if len(argv) >= 3 and argv[1] == "--raw":
+        result, returns = stt.transcribe_raw(argv[2])
+        for i, value in enumerate(result):
+            label = returns[i].get("label") if i < len(returns) else None
+            print("[%d] %s: %s" % (i, label, json.dumps(value, ensure_ascii=False)))
+        return 0
     if len(argv) < 2 or argv[1] == "--info":
         print(json.dumps(stt.info(), ensure_ascii=False, indent=2))
         name, _ = stt._pick_endpoint()

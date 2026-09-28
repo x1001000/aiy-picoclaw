@@ -43,6 +43,7 @@ edge-tts --voice zh-CN-YunxiaNeural --text "你好" --write-media /tmp/t.mp3 && 
 arecord -f S16_LE -r 16000 -c 1 -d 3 /tmp/r.wav && aplay /tmp/r.wav                              # mic
 python3 breeze_stt.py --info                              # STT: lists the Space's API endpoints
 python3 breeze_stt.py /tmp/r.wav                          # STT: transcribe your recording
+python3 breeze_stt.py --raw /tmp/r.wav                    # STT: show every output the Space returns
 ```
 
 Then run the demo:
@@ -67,6 +68,7 @@ variables override them. The useful ones:
 | `TTS_VOICE` | `zh-CN-YunxiaNeural` | any `edge-tts --list-voices` voice |
 | `MAX_RECORD_SEC` | `15` | recording stops at this limit or on the next button press |
 | `STT_API_NAME` | auto | Space endpoint; auto-detected from `/gradio_api/info` |
+| `STT_OUTPUT_INDEX` | auto | which Space output is the transcript (see `--raw`); auto skips status text like 轉錄完成 |
 | `HF_TOKEN` | – | optional, helps when the free Space quota runs out |
 | `ARECORD_DEVICE` | `default` | e.g. `plughw:0,0` if `default` is not the kit's mic |
 
@@ -81,6 +83,9 @@ variables override them. The useful ones:
 - **Button does nothing.** Without the `aiy` library the script uses `gpiozero`:
   button on BCM 23, button LED on BCM 25 (the v1 wiring). The startup log says which
   input it picked.
+- **STT prints 轉錄完成 (or another status) instead of your words.** Run
+  `python3 breeze_stt.py --raw /tmp/r.wav`, find the transcript's `[index]`, and set
+  `STT_OUTPUT_INDEX` to it in `config.env`.
 - **STT errors / slow first request.** Free Spaces go to sleep; the first call can
   take a minute to wake it. `python3 breeze_stt.py --info` shows whether it is up.
 - **`edge-tts` not found.** It installs to `~/.local/bin`; add that to `PATH`, or the
