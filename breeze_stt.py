@@ -11,8 +11,9 @@ The endpoint name and its parameters are discovered at runtime from
 {space}/gradio_api/info, so this keeps working if the Space renames things.
 The Breeze Space's endpoint only returns a status ("轉錄完成") and keeps the
 transcript in a gr.State; the web page then runs a hidden follow-up step to show
-it. So we read {space}/config and run those follow-up steps too, in the same
-session_hash so the State carries over.
+it. So we read {space}/config and run the endpoint and its follow-up steps
+through the queue API (/queue/join + /queue/data) in one session_hash, so the
+State carries over. /call is only used when /config is unavailable.
 Only the Python standard library is used, so it runs on an old 32-bit Pi.
 
 Run `python3 breeze_stt.py --info` to print the Space's API,
@@ -172,7 +173,7 @@ class BreezeSTT:
         steps = []
         if dep is None:  # no /config: just the documented endpoint
             labels = [r.get("label") for r in ep.get("returns", [])]
-            for event, outputs in self._call_api(name, args, session):
+            for event, outputs in self._call_api(name, args):
                 steps.append(("/" + name, event, labels, outputs))
             return steps
 
@@ -186,7 +187,7 @@ class BreezeSTT:
             step = ("/" + d["api_name"]) if d.get("api_name") else "fn %d" % _dep_id(config, d)
             labels = [(comps.get(o, {}).get("props") or {}).get("label") for o in d.get("outputs", [])]
             last = None
-            for event, outputs in self._call_dep(config, d, d_args, session):
+            for event, outputs in self._call_queue(_dep_id(config, d), d_args, session):
                 steps.append((step, event, labels, outputs))
                 last = outputs
             if last is not None:
@@ -216,30 +217,25 @@ class BreezeSTT:
                 continue
         return {}
 
-    def _call_dep(self, config, dep, args, session):
-        if dep.get("api_name"):
-            try:
-                return self._call_api(dep["api_name"], args, session)
-            except urllib.error.HTTPError as e:
-                if e.code not in (404, 405, 422):
-                    raise
-        return self._call_queue(_dep_id(config, dep), args, session)
-
-    def _call_api(self, api_name, args, session):
-        event = self._json("POST", "%s/call/%s" % (self._prefix, api_name),
-                           {"data": args, "session_hash": session})
+    def _call_api(self, api_name, args):
+        # No session_hash here: Gradio 5 files /call results under the event id,
+        # and a custom session_hash makes the result lookup fail with
+        # "404: Session not found."
+        event = self._json("POST", "%s/call/%s" % (self._prefix, api_name), {"data": args})
         event_id = event.get("event_id")
         if not event_id:
             raise STTError("no event_id in response: %r" % (event,))
         return self._read_sse("%s/call/%s/%s" % (self._prefix, api_name, event_id))
 
     def _call_queue(self, fn_index, args, session):
-        """Low-level queue API, for steps the Space hides from /call."""
+        """Gradio's queue API (what the web page uses). Unlike /call it lets several
+        steps share one session_hash, so gr.State carries over between them."""
         event = self._json("POST", self._prefix + "/queue/join",
                            {"data": args, "fn_index": fn_index, "session_hash": session,
                             "event_data": None, "trigger_id": None})
         event_id = event.get("event_id")
         events = []
+        current = None
         path = "%s/queue/data?session_hash=%s" % (self._prefix, session)
         with self._request("GET", path, headers={"Accept": "text/event-stream"}) as resp:
             for raw in resp:
@@ -252,7 +248,12 @@ class BreezeSTT:
                 kind = msg.get("msg")
                 output = msg.get("output") or {}
                 if kind == "process_generating" and isinstance(output.get("data"), list):
-                    events.append(("generating", output["data"]))
+                    # First update has full values, later ones are diffs against it.
+                    if current is None:
+                        current = list(output["data"])
+                    else:
+                        current = [_apply_diff(c, d) for c, d in zip(current, output["data"])]
+                    events.append(("generating", list(current)))
                 elif kind == "process_completed":
                     if not msg.get("success", True):
                         raise STTError("space step %s failed: %s" % (fn_index, output.get("error")))
@@ -320,6 +321,33 @@ class BreezeSTT:
         if events:
             return events
         raise STTError("stream ended without a result (Space asleep or out of quota?)")
+
+
+def _apply_diff(value, diff):
+    """Apply a Gradio streaming diff: [[action, path, value], ...]."""
+    import copy
+
+    value = copy.deepcopy(value)
+    for action, path, v in diff:
+        if not path:
+            value = v if action == "replace" else value + v
+            continue
+        target = value
+        for key in path[:-1]:
+            target = target[key]
+        key = path[-1]
+        if action == "replace":
+            target[key] = v
+        elif action == "append":
+            target[key] += v
+        elif action == "add":
+            if isinstance(target, list):
+                target.insert(int(key), v)
+            else:
+                target[key] = v
+        elif action == "delete":
+            del target[int(key) if isinstance(target, list) else key]
+    return value
 
 
 def _dep_id(config, dep):
