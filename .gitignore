@@ -1,0 +1,3 @@
+config.env
+.tts_cache/
+__pycache__/

@@ -1,0 +1,21 @@
+# Start the demo at boot:
+#   sed -i "s#/home/pi#$HOME#g; s#User=pi#User=$USER#" aiy-picoclaw.service
+#   sudo cp aiy-picoclaw.service /etc/systemd/system/
+#   sudo systemctl enable --now aiy-picoclaw
+#   journalctl -u aiy-picoclaw -f
+[Unit]
+Description=AIY Voice Kit + picoclaw voice chat demo
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/aiy-picoclaw
+Environment=HOME=/home/pi
+Environment=PATH=/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -u /home/pi/aiy-picoclaw/voice_chat.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
