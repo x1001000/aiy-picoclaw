@@ -9,6 +9,11 @@ cd "$(dirname "$0")"
 CONFIG=/boot/firmware/config.txt
 [ -f "$CONFIG" ] || CONFIG=/boot/config.txt
 echo "boot config: $CONFIG"
+OVERLAYS="$(dirname "$CONFIG")/overlays"
+if ! ls "$OVERLAYS"/googlevoicehat-soundcard.dtbo >/dev/null 2>&1; then
+    echo "WARNING: $OVERLAYS/googlevoicehat-soundcard.dtbo not found; this kernel may lack"
+    echo "         the Voice HAT driver. Try: sudo apt update && sudo apt full-upgrade"
+fi
 sudo cp "$CONFIG" "$CONFIG.bak.aiy"
 
 if ! grep -q '^dtoverlay=googlevoicehat-soundcard' "$CONFIG"; then

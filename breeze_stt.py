@@ -147,7 +147,11 @@ class BreezeSTT:
             text = self._pick_output(outputs, labels)
             if text:
                 # The plain-text export puts one sentence per line.
-                return " ".join(line.strip() for line in text.splitlines() if line.strip())
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                lines = [line for line in lines if not _HALLUCINATION.search(line)]
+                if not lines:
+                    raise NoSpeech("only Whisper's silence phrases (%r): is the recording silent?" % text)
+                return " ".join(lines)
         if any(event == "rendered" for _, event, _, _ in steps):
             raise NoSpeech("no speech recognized: is the recording silent? (check with: aplay %s)" % wav_path)
         raise STTError("no transcript in result: %r" % (steps[-1][3] if steps else None,))
@@ -418,6 +422,13 @@ def _is_file_param(p):
     ptype = json.dumps(p.get("python_type", {})).lower()
     return "filepath" in ptype or "filedata" in ptype
 
+
+# Whisper-family models "hear" these YouTube/subtitle outros in silence or noise.
+_HALLUCINATION = re.compile(
+    r"請不吝|请不吝|點贊.{0,6}訂閱|点赞.{0,6}订阅|訂閱.{0,6}轉發|订阅.{0,6}转发|明鏡與點點|明镜与点点|"
+    r"字幕由|字幕提供|字幕製作|字幕制作|字幕組|字幕组|字幕志願者|字幕志愿者|"
+    r"感謝觀看|感谢观看|謝謝觀看|谢谢观看|謝謝收看|谢谢收看|優優獨播|优优独播|Amara\.org|"
+    r"thanks? (you )?for watching|please subscribe|like and subscribe", re.I)
 
 _STATUS_LABEL = re.compile(r"status|狀態|state|message|訊息|log|info|進度|progress", re.I)
 _TEXT_LABEL = re.compile(r"轉錄|轉寫|文字|結果|text|transcri|result|output", re.I)

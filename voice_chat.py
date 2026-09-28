@@ -45,6 +45,7 @@ def load_config():
         "REPLY_HINT": "（這是語音對話：請用繁體中文口語、簡短地回答，兩三句話以內，不要使用 markdown、列表或表情符號。）",
         "ARECORD_DEVICE": "default",
         "MAX_RECORD_SEC": "15",
+        "MIN_PEAK_PERCENT": "3",
         "BUTTON_GPIO": "23",
         "BUTTON_LED_GPIO": "25",
         "BEEP": "1",
@@ -314,6 +315,11 @@ def chat_round(cfg, button, stt, beep_path):
             return
         peak = wav_peak(wav)
         log("recorded %.1fs, peak level %s" % (dur, "?" if peak is None else "%.0f%%" % peak))
+        if peak is not None and peak < float(cfg["MIN_PEAK_PERCENT"]):
+            # Don't send silence: Whisper-based STT invents text for it.
+            log("recording is silent: is the mic working? (arecord -l)")
+            say(cfg, "我沒有聽到聲音喔。", cache=True)
+            return
         t = time.time()
         try:
             user_text = stt.transcribe(wav)
