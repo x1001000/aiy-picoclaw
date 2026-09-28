@@ -9,11 +9,13 @@ The Space is a Gradio app, so we talk to it with Gradio's plain HTTP API
 
 The endpoint name and its parameters are discovered at runtime from
 {space}/gradio_api/info, so this keeps working if the Space renames things.
-The Breeze Space's endpoint only returns a status ("轉錄完成") and keeps the
-transcript in a gr.State; the web page then runs a hidden follow-up step to show
-it. So we read {space}/config and run the endpoint and its follow-up steps
-through the queue API (/queue/join + /queue/data) in one session_hash, so the
-State carries over. /call is only used when /config is unavailable.
+How the Breeze Space works (checked against the live Space, Gradio 5.34):
+  /process_audio(audio, model)  -> [<gr.State>, "轉錄完成"]   transcript kept in the State
+  /apply (State .change)        -> @gr.render: one textbox per sentence + export button
+  /update_export_areas(State)   -> [SRT text, plain text]   (exists only after /apply)
+So we read {space}/config and run that chain through the queue API
+(/queue/join + /queue/data, as the Space's agents.md describes) in one
+session_hash so the State carries over. /call is only used without /config.
 Only the Python standard library is used, so it runs on an old 32-bit Pi.
 
 Run `python3 breeze_stt.py --info` to print the Space's API,
@@ -140,7 +142,8 @@ class BreezeSTT:
         for _, _, labels, outputs in reversed(steps):
             text = self._pick_output(outputs, labels)
             if text:
-                return text.strip()
+                # The plain-text export puts one sentence per line.
+                return " ".join(line.strip() for line in text.splitlines() if line.strip())
         raise STTError("no transcript in result: %r" % (steps[-1][3] if steps else None,))
 
     def transcribe_raw(self, wav_path):
@@ -182,19 +185,39 @@ class BreezeSTT:
         values = {}  # component id -> latest value we know
         queue = [(dep, args)]
         done = set()
-        while queue and len(done) < 8:
+        while queue and len(done) < 12:
             d, d_args = queue.pop(0)
-            done.add(_dep_id(config, d))
-            step = ("/" + d["api_name"]) if d.get("api_name") else "fn %d" % _dep_id(config, d)
+            did = _dep_id(config, d)
+            done.add(did)
+            step = ("/" + d["api_name"]) if d.get("api_name") else "fn %d" % did
             labels = [(comps.get(o, {}).get("props") or {}).get("label") for o in d.get("outputs", [])]
             last = None
-            for event, outputs in self._call_queue(_dep_id(config, d), d_args, session):
+            render = {}
+            for event, outputs in self._call_queue(did, d_args, session, render):
                 steps.append((step, event, labels, outputs))
                 last = outputs
             if last is not None:
                 for cid, v in zip(d.get("outputs", []), last):
                     if not (isinstance(v, dict) and v.get("__type__") == "update"):
                         values[cid] = v
+
+            # A @gr.render step (the Breeze Space's "apply") builds new components
+            # on the fly: one textbox per sentence, plus an export button whose
+            # step turns the State into SRT and plain text.
+            rendered = render.get("components") or []
+            for c in rendered:
+                comps[c["id"]] = c
+            segments = [(c.get("props") or {}).get("value") for c in rendered if c.get("type") == "textbox"]
+            segments = [v.strip() for v in segments if isinstance(v, str) and v.strip()]
+            if segments:
+                steps.append((step, "rendered", ["轉錄結果"], [" ".join(segments)]))
+            for rd in render.get("dependencies") or []:
+                ins = rd.get("inputs", [])
+                if (rd.get("backend_fn", True) and rd.get("outputs") and ins
+                        and all(comps.get(i, {}).get("type") == "state" for i in ins)
+                        and _dep_id(config, rd) not in done):
+                    queue.append((rd, [None] * len(ins)))
+
             for nxt in _followups(config, d):
                 if _dep_id(config, nxt) in done or not nxt.get("backend_fn", True):
                     continue
@@ -228,7 +251,7 @@ class BreezeSTT:
             raise STTError("no event_id in response: %r" % (event,))
         return self._read_sse("%s/call/%s/%s" % (self._prefix, api_name, event_id))
 
-    def _call_queue(self, fn_index, args, session):
+    def _call_queue(self, fn_index, args, session, render=None):
         """Gradio's queue API (what the web page uses). Unlike /call it lets several
         steps share one session_hash, so gr.State carries over between them."""
         event = self._json("POST", self._prefix + "/queue/join",
@@ -257,7 +280,9 @@ class BreezeSTT:
                     events.append(("generating", list(current)))
                 elif kind == "process_completed":
                     if not msg.get("success", True):
-                        raise STTError("space step %s failed: %s" % (fn_index, output.get("error")))
+                        raise STTError("space step %s failed: %s" % (fn_index, output.get("error") or msg))
+                    if render is not None and output.get("render_config"):
+                        render.update(output["render_config"])
                     events.append(("complete", output.get("data") or []))
                     return events
         return events
@@ -352,7 +377,9 @@ def _apply_diff(value, diff):
 
 
 def _dep_id(config, dep):
-    return dep["id"] if "id" in dep else config["dependencies"].index(dep)
+    if "id" in dep:
+        return dep["id"]
+    return config["dependencies"].index(dep)
 
 
 def _find_dep(config, api_name):
