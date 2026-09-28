@@ -43,7 +43,7 @@ edge-tts --voice zh-CN-YunxiaNeural --text "你好" --write-media /tmp/t.mp3 && 
 arecord -f S16_LE -r 16000 -c 1 -d 3 /tmp/r.wav && aplay /tmp/r.wav                              # mic
 python3 breeze_stt.py --info                              # STT: lists the Space's API endpoints
 python3 breeze_stt.py /tmp/r.wav                          # STT: transcribe your recording
-python3 breeze_stt.py --raw /tmp/r.wav                    # STT: show every output the Space returns
+python3 breeze_stt.py --raw /tmp/r.wav                    # STT: show every step and output the Space returns
 ```
 
 Then run the demo:

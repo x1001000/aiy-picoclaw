@@ -9,6 +9,10 @@ The Space is a Gradio app, so we talk to it with Gradio's plain HTTP API
 
 The endpoint name and its parameters are discovered at runtime from
 {space}/gradio_api/info, so this keeps working if the Space renames things.
+The Breeze Space's endpoint only returns a status ("轉錄完成") and keeps the
+transcript in a gr.State; the web page then runs a hidden follow-up step to show
+it. So we read {space}/config and run those follow-up steps too, in the same
+session_hash so the State carries over.
 Only the Python standard library is used, so it runs on an old 32-bit Pi.
 
 Run `python3 breeze_stt.py --info` to print the Space's API,
@@ -127,17 +131,21 @@ class BreezeSTT:
         return paths[0], filename, len(content), ctype
 
     def transcribe(self, wav_path):
-        events, returns = self.transcribe_raw(wav_path)
-        # Streaming Spaces send the transcript in "generating" updates and may end
-        # with only a status (e.g. [None, "轉錄完成"]), so look back from the end.
-        for _, outputs in reversed(events):
-            text = self._pick_output(outputs, returns)
+        steps = self.transcribe_raw(wav_path)
+        # The transcript can arrive in streamed "generating" updates, or only in a
+        # follow-up step (the Breeze Space returns [<State>, "轉錄完成"] and a hidden
+        # .then() step shows the text), so search everything, newest first.
+        for _, _, labels, outputs in reversed(steps):
+            text = self._pick_output(outputs, labels)
             if text:
                 return text.strip()
-        raise STTError("no transcript in result: %r" % (events[-1][1] if events else None,))
+        raise STTError("no transcript in result: %r" % (steps[-1][3] if steps else None,))
 
     def transcribe_raw(self, wav_path):
-        """Return ([(event, outputs), ...], output descriptions from /info)."""
+        """Run the endpoint plus the follow-up steps the web page would run.
+
+        Returns [(step name, event, output labels, outputs), ...].
+        """
         name, ep = self._pick_endpoint()
         server_path, filename, size, ctype = self._upload(wav_path)
         file_data = {
@@ -157,15 +165,102 @@ class BreezeSTT:
             else:
                 args.append(None)
 
-        event = self._json("POST", "%s/call/%s" % (self._prefix, name), {"data": args})
+        # One session for the whole chain, so gr.State values carry over.
+        session = uuid.uuid4().hex[:11]
+        config = self._config()
+        dep = _find_dep(config, name)
+        steps = []
+        if dep is None:  # no /config: just the documented endpoint
+            labels = [r.get("label") for r in ep.get("returns", [])]
+            for event, outputs in self._call_api(name, args, session):
+                steps.append(("/" + name, event, labels, outputs))
+            return steps
+
+        comps = {c["id"]: c for c in config.get("components", [])}
+        values = {}  # component id -> latest value we know
+        queue = [(dep, args)]
+        done = set()
+        while queue and len(done) < 8:
+            d, d_args = queue.pop(0)
+            done.add(_dep_id(config, d))
+            step = ("/" + d["api_name"]) if d.get("api_name") else "fn %d" % _dep_id(config, d)
+            labels = [(comps.get(o, {}).get("props") or {}).get("label") for o in d.get("outputs", [])]
+            last = None
+            for event, outputs in self._call_dep(config, d, d_args, session):
+                steps.append((step, event, labels, outputs))
+                last = outputs
+            if last is not None:
+                for cid, v in zip(d.get("outputs", []), last):
+                    if not (isinstance(v, dict) and v.get("__type__") == "update"):
+                        values[cid] = v
+            for nxt in _followups(config, d):
+                if _dep_id(config, nxt) in done or not nxt.get("backend_fn", True):
+                    continue
+                nxt_args = []
+                for cid in nxt.get("inputs", []):
+                    c = comps.get(cid, {})
+                    if c.get("type") == "state":
+                        nxt_args.append(None)  # server uses the session's stored value
+                    elif cid in values:
+                        nxt_args.append(values[cid])
+                    else:
+                        nxt_args.append((c.get("props") or {}).get("value"))
+                queue.append((nxt, nxt_args))
+        return steps
+
+    def _config(self):
+        for path in ("/config", self._prefix + "/config"):
+            try:
+                return self._json("GET", path)
+            except Exception:
+                continue
+        return {}
+
+    def _call_dep(self, config, dep, args, session):
+        if dep.get("api_name"):
+            try:
+                return self._call_api(dep["api_name"], args, session)
+            except urllib.error.HTTPError as e:
+                if e.code not in (404, 405, 422):
+                    raise
+        return self._call_queue(_dep_id(config, dep), args, session)
+
+    def _call_api(self, api_name, args, session):
+        event = self._json("POST", "%s/call/%s" % (self._prefix, api_name),
+                           {"data": args, "session_hash": session})
         event_id = event.get("event_id")
         if not event_id:
             raise STTError("no event_id in response: %r" % (event,))
+        return self._read_sse("%s/call/%s/%s" % (self._prefix, api_name, event_id))
 
-        events = self._read_sse("%s/call/%s/%s" % (self._prefix, name, event_id))
-        return events, ep.get("returns", [])
+    def _call_queue(self, fn_index, args, session):
+        """Low-level queue API, for steps the Space hides from /call."""
+        event = self._json("POST", self._prefix + "/queue/join",
+                           {"data": args, "fn_index": fn_index, "session_hash": session,
+                            "event_data": None, "trigger_id": None})
+        event_id = event.get("event_id")
+        events = []
+        path = "%s/queue/data?session_hash=%s" % (self._prefix, session)
+        with self._request("GET", path, headers={"Accept": "text/event-stream"}) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                msg = json.loads(line[5:].strip())
+                if msg.get("event_id") not in (None, event_id):
+                    continue
+                kind = msg.get("msg")
+                output = msg.get("output") or {}
+                if kind == "process_generating" and isinstance(output.get("data"), list):
+                    events.append(("generating", output["data"]))
+                elif kind == "process_completed":
+                    if not msg.get("success", True):
+                        raise STTError("space step %s failed: %s" % (fn_index, output.get("error")))
+                    events.append(("complete", output.get("data") or []))
+                    return events
+        return events
 
-    def _pick_output(self, result, returns):
+    def _pick_output(self, result, labels):
         """The Space may return several outputs (e.g. a status line such as
         "轉錄完成" plus the transcript), so pick the one that is the transcript."""
         if self.output_index is not None:
@@ -178,7 +273,7 @@ class BreezeSTT:
             text = self._output_text(value)
             if not text or not text.strip():
                 continue
-            label = (returns[i].get("label") or "") if i < len(returns) else ""
+            label = (labels[i] if i < len(labels) else None) or ""
             if _STATUS_LABEL.search(label) or _STATUS_TEXT.match(text.strip()):
                 continue
             candidates.append((1 if _TEXT_LABEL.search(label) else 0, len(text), text))
@@ -227,6 +322,33 @@ class BreezeSTT:
         raise STTError("stream ended without a result (Space asleep or out of quota?)")
 
 
+def _dep_id(config, dep):
+    return dep["id"] if "id" in dep else config["dependencies"].index(dep)
+
+
+def _find_dep(config, api_name):
+    for d in config.get("dependencies", []):
+        if d.get("api_name") == api_name:
+            return d
+    return None
+
+
+def _followups(config, dep):
+    """Steps the browser runs after dep: .then()/.success() chains, and
+    .change() listeners on the components dep writes to."""
+    did = _dep_id(config, dep)
+    outs = set(dep.get("outputs", []))
+    found = []
+    for d in config.get("dependencies", []):
+        if d is dep:
+            continue
+        if d.get("trigger_after") == did:
+            found.append(d)
+        elif any(t and t[0] in outs and t[1] == "change" for t in d.get("targets", [])):
+            found.append(d)
+    return found
+
+
 def _is_file_param(p):
     comp = (p.get("component") or "").lower()
     if comp in ("audio", "file", "microphone", "uploadbutton"):
@@ -259,11 +381,10 @@ def main(argv):
         output_index=int(os.environ["STT_OUTPUT_INDEX"]) if os.environ.get("STT_OUTPUT_INDEX") else None,
     )
     if len(argv) >= 3 and argv[1] == "--raw":
-        events, returns = stt.transcribe_raw(argv[2])
-        for n, (event, outputs) in enumerate(events):
-            print("--- %s #%d" % (event, n))
+        for step, event, labels, outputs in stt.transcribe_raw(argv[2]):
+            print("--- %s %s" % (step, event))
             for i, value in enumerate(outputs):
-                label = returns[i].get("label") if i < len(returns) else None
+                label = labels[i] if i < len(labels) else None
                 print("[%d] %s: %s" % (i, label, json.dumps(value, ensure_ascii=False)))
         return 0
     if len(argv) < 2 or argv[1] == "--info":
