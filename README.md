@@ -39,7 +39,7 @@ Check each piece on its own first:
 
 ```sh
 ~/picoclaw agent -m "hi"                                  # LLM (you already did this)
-edge-tts --voice zh-CN-YunxiaNeural --text "你好" --write-media /tmp/t.mp3 && mpg123 /tmp/t.mp3   # TTS + speaker
+python3 -c "import voice_chat as v; v.tts_to_file(v.load_config(), '你好', '/tmp/t.mp3')" && mpg123 /tmp/t.mp3   # TTS + speaker
 arecord -f S16_LE -r 16000 -c 1 -d 3 /tmp/r.wav && aplay /tmp/r.wav                              # mic
 python3 breeze_stt.py --info                              # STT: lists the Space's API endpoints
 python3 breeze_stt.py /tmp/r.wav                          # STT: transcribe your recording
@@ -94,5 +94,8 @@ variables override them. The useful ones:
   take a minute to wake it. `python3 breeze_stt.py --info` shows whether it is up.
 - **`apt` 404 on `raspbian.raspberrypi.org buster`.** Buster is end-of-life; `install.sh`
   switches apt to `legacy.raspbian.org` for you (backup in `/etc/apt/sources.list.bak.aiy`).
+- **The box keeps saying "to install the screen reader, press Ctrl+Alt+Space".** That is
+  the desktop's first-boot wizard, now audible through the HAT. Disable it:
+  `sudo pkill piwiz; sudo rm -f /etc/xdg/autostart/piwiz.desktop`.
 - **`edge-tts` not found.** It installs to `~/.local/bin`; add that to `PATH`, or the
   script falls back to `python3 -m edge_tts`. Recent `edge-tts` needs Python ≥ 3.8.

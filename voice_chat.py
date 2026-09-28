@@ -169,11 +169,22 @@ def which_or_die(name, hint):
 
 
 def tts_to_file(cfg, text, out_path):
-    exe = shutil.which("edge-tts")
-    cmd = [exe] if exe else [sys.executable, "-m", "edge_tts"]
-    cmd += ["--voice", cfg["TTS_VOICE"], "--rate=" + cfg["TTS_RATE"],
-            "--text=" + text, "--write-media", out_path]
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    """Synthesize with the edge_tts library directly (not its CLI, which exited
+    silently without output on the Pi; this also avoids a Python start-up)."""
+    import asyncio
+
+    import edge_tts
+
+    async def run():
+        await edge_tts.Communicate(text, cfg["TTS_VOICE"], rate=cfg["TTS_RATE"]).save(out_path)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        raise RuntimeError("edge-tts produced no audio for %r" % text)
 
 
 def play(path):
@@ -370,11 +381,10 @@ def main():
     cfg = load_config()
     which_or_die("arecord", "sudo apt install alsa-utils")
     which_or_die("mpg123", "sudo apt install mpg123")
-    if not shutil.which("edge-tts"):
-        try:
-            import edge_tts  # noqa: F401
-        except ImportError:
-            sys.exit("missing edge-tts — pip3 install edge-tts")
+    try:
+        import edge_tts  # noqa: F401
+    except ImportError:
+        sys.exit("missing edge-tts — run: python3 -m pip install --user edge-tts")
     if not os.access(cfg["PICOCLAW_BIN"], os.X_OK):
         sys.exit("picoclaw not found at %s — set PICOCLAW_BIN in config.env" % cfg["PICOCLAW_BIN"])
 
