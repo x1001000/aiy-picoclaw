@@ -1,0 +1,41 @@
+# /etc/asound.conf for the AIY Voice Kit v1 (Voice HAT), based on the one
+# Google's AIY v1 image shipped. The HAT only does stereo 48 kHz, so "plug"
+# converts whatever apps ask for (16 kHz mono recording, mp3 playback).
+# The card is addressed by name so HDMI/headphone cards can't steal index 0.
+
+pcm.voicehat_dmix {
+    type dmix
+    ipc_key 1024
+    slave { pcm "hw:sndrpigooglevoi" channels 2 rate 48000 }
+}
+
+pcm.voicehat_dsnoop {
+    type dsnoop
+    ipc_key 1025
+    slave { pcm "hw:sndrpigooglevoi" channels 2 rate 48000 }
+}
+
+# Speaker, with a "Master" volume control: alsamixer / amixer set Master 80%
+pcm.softvol {
+    type softvol
+    slave.pcm "voicehat_dmix"
+    control { name "Master" card sndrpigooglevoi }
+}
+
+# The HAT's MEMS mics are quiet; boost them. Lower 30.0 if recordings clip.
+pcm.micboost {
+    type route
+    slave.pcm "voicehat_dsnoop"
+    ttable { 0.0 30.0 1.1 30.0 }
+}
+
+pcm.!default {
+    type asym
+    playback.pcm "plug:softvol"
+    capture.pcm "plug:micboost"
+}
+
+ctl.!default {
+    type hw
+    card sndrpigooglevoi
+}

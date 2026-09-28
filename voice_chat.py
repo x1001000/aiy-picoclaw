@@ -45,6 +45,7 @@ def load_config():
         "ARECORD_DEVICE": "default",
         "MAX_RECORD_SEC": "15",
         "BUTTON_GPIO": "23",
+        "BUTTON_LED_GPIO": "25",
         "BEEP": "1",
     }
     path = os.path.join(HERE, "config.env")
@@ -91,10 +92,11 @@ class KeyboardButton:
 class GpiozeroButton:
     name = "gpiozero"
 
-    def __init__(self, pin):
-        from gpiozero import Button
+    def __init__(self, pin, led_pin=None):
+        from gpiozero import Button, PWMLED
 
         self._b = Button(pin, pull_up=True, bounce_time=0.05)
+        self._led = PWMLED(led_pin) if led_pin is not None else None
 
     def wait_for_press(self, timeout=None):
         # Wait for release first so a single long press isn't counted twice.
@@ -102,7 +104,16 @@ class GpiozeroButton:
         return bool(self._b.wait_for_press(timeout))
 
     def led(self, state):
-        pass
+        if self._led is None:
+            return
+        if state == "on":
+            self._led.on()
+        elif state == "blink":
+            self._led.blink(on_time=0.25, off_time=0.25)
+        elif state == "pulse":
+            self._led.pulse(fade_in_time=0.5, fade_out_time=0.5)
+        else:
+            self._led.off()
 
 
 class AiyBoard:
@@ -139,7 +150,8 @@ def make_button(cfg):
     except Exception as e:
         log("aiy library not usable (%s); trying gpiozero" % e)
     try:
-        return GpiozeroButton(int(cfg["BUTTON_GPIO"]))
+        led_pin = cfg["BUTTON_LED_GPIO"]
+        return GpiozeroButton(int(cfg["BUTTON_GPIO"]), int(led_pin) if led_pin else None)
     except Exception as e:
         log("gpiozero not usable (%s); falling back to keyboard" % e)
     return KeyboardButton()
