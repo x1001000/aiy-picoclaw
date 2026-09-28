@@ -46,6 +46,7 @@ def load_config():
         "ARECORD_DEVICE": "default",
         "MAX_RECORD_SEC": "15",
         "MIN_PEAK_PERCENT": "3",
+        "NORMALIZE": "1",
         "BUTTON_GPIO": "23",
         "BUTTON_LED_GPIO": "25",
         "BEEP": "1",
@@ -236,6 +237,30 @@ def wav_peak(path):
     return 100.0 * max((abs(x) for x in samples), default=0) / 32768
 
 
+def normalize_wav(path, target=70.0, max_gain=30.0):
+    """Scale a quiet 16-bit WAV up so its peak is about target% (the Voice HAT
+    mics are quiet). Returns the gain applied."""
+    import array
+    import wave
+
+    peak = wav_peak(path)
+    if not peak or peak >= target:
+        return 1.0
+    gain = min(target / peak, max_gain)
+    with wave.open(path) as w:
+        params = w.getparams()
+        samples = array.array("h", w.readframes(w.getnframes()))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    samples = array.array("h", (max(-32768, min(32767, int(x * gain))) for x in samples))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    with wave.open(path, "wb") as w:
+        w.setparams(params)
+        w.writeframes(samples.tobytes())
+    return gain
+
+
 def record(cfg, button, wav_path):
     """Record 16 kHz mono until the button is pressed again or the time limit hits."""
     max_sec = float(cfg["MAX_RECORD_SEC"])
@@ -313,6 +338,10 @@ def chat_round(cfg, button, stt, beep_path):
             log("recording too short, skipped")
             say(cfg, "我沒有聽到聲音喔。", cache=True)
             return
+        if cfg["NORMALIZE"] == "1":
+            gain = normalize_wav(wav)
+            if gain > 1.0:
+                log("boosted quiet recording x%.1f" % gain)
         peak = wav_peak(wav)
         log("recorded %.1fs, peak level %s" % (dur, "?" if peak is None else "%.0f%%" % peak))
         if peak is not None and peak < float(cfg["MIN_PEAK_PERCENT"]):
