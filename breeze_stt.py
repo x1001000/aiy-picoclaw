@@ -17,7 +17,8 @@ State carries over. /call is only used when /config is unavailable.
 Only the Python standard library is used, so it runs on an old 32-bit Pi.
 
 Run `python3 breeze_stt.py --info` to print the Space's API,
-`python3 breeze_stt.py --raw some.wav` to see every output the Space returns, or
+`python3 breeze_stt.py --raw some.wav` to see every output the Space returns,
+`python3 breeze_stt.py --diagnose some.wav` to also dump the Space's step graph, or
 `python3 breeze_stt.py some.wav` to transcribe a file.
 """
 
@@ -408,6 +409,27 @@ def main(argv):
         os.environ.get("HF_TOKEN") or None,
         output_index=int(os.environ["STT_OUTPUT_INDEX"]) if os.environ.get("STT_OUTPUT_INDEX") else None,
     )
+    if len(argv) >= 2 and argv[1] == "--diagnose":
+        # Everything needed to see where a Space puts its result, in one paste.
+        config = stt._config() if stt.info() is not None else {}
+        print("gradio", config.get("version"), "| endpoint picked: /%s" % stt._pick_endpoint()[0])
+        comps = {c["id"]: c for c in config.get("components", [])}
+
+        def desc(cid):
+            c = comps.get(cid, {})
+            props = c.get("props") or {}
+            extra = "" if props.get("visible", True) else ",hidden"
+            return "%s#%s%s(%s)" % (c.get("type"), cid, extra, props.get("label") or "")
+
+        for i, d in enumerate(config.get("dependencies", [])):
+            print("dep %s api=%s trig=%s after=%s backend=%s js=%s\n    in : %s\n    out: %s" % (
+                d.get("id", i), d.get("api_name"), d.get("targets"), d.get("trigger_after"),
+                d.get("backend_fn"), bool(d.get("js")),
+                ", ".join(desc(x) for x in d.get("inputs", [])),
+                ", ".join(desc(x) for x in d.get("outputs", []))))
+        if len(argv) < 3:
+            return 0
+        argv = [argv[0], "--raw", argv[2]]
     if len(argv) >= 3 and argv[1] == "--raw":
         for step, event, labels, outputs in stt.transcribe_raw(argv[2]):
             print("--- %s %s" % (step, event))
