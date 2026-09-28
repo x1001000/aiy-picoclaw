@@ -41,8 +41,13 @@ def load_config():
         "HF_TOKEN": "",
         "GREETING": "你好，我是小龍蝦。請在嗶聲後說話，說完再按一次按鈕。",
         "GREETING_MODE": "fixed",  # "fixed" or "llm"
-        "GREETING_PROMPT": "有人按下了語音盒的按鈕。請用一句簡短、口語的繁體中文打招呼，並邀請對方說話。",
-        "REPLY_HINT": "（這是語音對話：請用繁體中文口語、簡短地回答，兩三句話以內，不要使用 markdown、列表或表情符號。）",
+        "GREETING_PROMPT": "有人按下了語音盒的按鈕（你透過麥克風和喇叭跟對方對話，聽得到也能說話）。"
+                           "請用一句簡短、口語的繁體中文打招呼，並邀請對方說話。",
+        # The model only sees text, so tell it about the mic/STT and TTS/speaker around it.
+        "REPLY_HINT": "（系統說明：你正透過一台實體語音盒與使用者面對面對話。使用者說的話經由麥克風和語音辨識"
+                      "轉成上面的文字，你的回覆會用語音合成從喇叭念出來，所以你聽得到使用者、也能開口說話。"
+                      "語音辨識偶爾會有錯字，請依上下文理解。請用繁體中文口語、簡短地回答，兩三句話以內，"
+                      "不要使用 markdown、列表或表情符號。）",
         "ARECORD_DEVICE": "default",
         "MAX_RECORD_SEC": "15",
         "MIN_PEAK_PERCENT": "3",

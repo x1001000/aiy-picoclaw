@@ -97,5 +97,10 @@ variables override them. The useful ones:
 - **The box keeps saying "to install the screen reader, press Ctrl+Alt+Space".** That is
   the desktop's first-boot wizard, now audible through the HAT. Disable it:
   `sudo pkill piwiz; sudo rm -f /etc/xdg/autostart/piwiz.desktop`.
-- **`edge-tts` not found.** It installs to `~/.local/bin`; add that to `PATH`, or the
-  script falls back to `python3 -m edge_tts`. Recent `edge-tts` needs Python ≥ 3.8.
+- **The bot says it can't hear you.** The model only sees text; `REPLY_HINT` (sent with
+  every message) tells it about the mic and speaker. If your `config.env` has old
+  `REPLY_HINT` / `GREETING_PROMPT` lines, delete them to use the current defaults, and
+  change `PICOCLAW_SESSION` (e.g. `aiy:voice2`) so earlier replies in the history don't linger.
+- **`module 'edge_tts' has no attribute 'Communicate'`, or edge-tts writes nothing.** The
+  install is damaged (e.g. by a power loss):
+  `python3 -m pip install --user --force-reinstall --no-cache-dir edge-tts`.
