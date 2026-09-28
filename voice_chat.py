@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 
-from breeze_stt import BreezeSTT, DEFAULT_SPACE_URL
+from breeze_stt import BreezeSTT, DEFAULT_SPACE_URL, NoSpeech
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -221,6 +221,20 @@ def make_beep(path, freq=880, dur=0.15, rate=16000):
         w.writeframes(frames)
 
 
+def wav_peak(path):
+    """Peak level of a 16-bit WAV as a percentage of full scale."""
+    import array
+    import wave
+
+    with wave.open(path) as w:
+        if w.getsampwidth() != 2:
+            return None
+        samples = array.array("h", w.readframes(w.getnframes()))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return 100.0 * max((abs(x) for x in samples), default=0) / 32768
+
+
 def record(cfg, button, wav_path):
     """Record 16 kHz mono until the button is pressed again or the time limit hits."""
     max_sec = float(cfg["MAX_RECORD_SEC"])
@@ -298,8 +312,13 @@ def chat_round(cfg, button, stt, beep_path):
             log("recording too short, skipped")
             say(cfg, "我沒有聽到聲音喔。", cache=True)
             return
+        peak = wav_peak(wav)
+        log("recorded %.1fs, peak level %s" % (dur, "?" if peak is None else "%.0f%%" % peak))
         t = time.time()
-        user_text = stt.transcribe(wav)
+        try:
+            user_text = stt.transcribe(wav)
+        except NoSpeech:
+            user_text = ""
         log("user: %s   (STT %.1fs)" % (user_text, time.time() - t))
     if not user_text:
         say(cfg, "抱歉，我沒聽清楚。", cache=True)

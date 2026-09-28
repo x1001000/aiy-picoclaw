@@ -43,6 +43,10 @@ class STTError(RuntimeError):
     pass
 
 
+class NoSpeech(STTError):
+    """The Space ran fine but recognized nothing (silent or very quiet audio)."""
+
+
 class BreezeSTT:
     def __init__(self, space_url=DEFAULT_SPACE_URL, api_name=None, hf_token=None, timeout=180,
                  output_index=None):
@@ -144,6 +148,8 @@ class BreezeSTT:
             if text:
                 # The plain-text export puts one sentence per line.
                 return " ".join(line.strip() for line in text.splitlines() if line.strip())
+        if any(event == "rendered" for _, event, _, _ in steps):
+            raise NoSpeech("no speech recognized: is the recording silent? (check with: aplay %s)" % wav_path)
         raise STTError("no transcript in result: %r" % (steps[-1][3] if steps else None,))
 
     def transcribe_raw(self, wav_path):
@@ -209,7 +215,7 @@ class BreezeSTT:
                 comps[c["id"]] = c
             segments = [(c.get("props") or {}).get("value") for c in rendered if c.get("type") == "textbox"]
             segments = [v.strip() for v in segments if isinstance(v, str) and v.strip()]
-            if segments:
+            if render:
                 steps.append((step, "rendered", ["轉錄結果"], [" ".join(segments)]))
             for rd in render.get("dependencies") or []:
                 ins = rd.get("inputs", [])

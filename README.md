@@ -78,6 +78,10 @@ variables override them. The useful ones:
   `aplay -l` should then list `sndrpigooglevoi`.
 - **`arecord: ... Invalid argument` or sound from the wrong output.** `/etc/asound.conf`
   is missing or points at another card; the setup script installs the right one.
+- **STT says "no speech recognized".** The recording is silent or too quiet. Listen with
+  `aplay /tmp/r.wav`; the demo also logs each recording's peak level (speech should
+  reach roughly 20% or more). Check `arecord -l` shows the Voice HAT and that
+  `setup_voicehat_v1.sh` was run.
 - **Recordings too quiet or distorted.** Adjust the `30.0` gain in `/etc/asound.conf`
   (`micboost` section). Speaker volume: `amixer set Master 80%`.
 - **Button does nothing.** Without the `aiy` library the script uses `gpiozero`:
